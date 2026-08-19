@@ -73,6 +73,14 @@ function escapeHtml(str) {
   return div.innerHTML;
 }
 
+// Drive bisa kasih ukuran berapapun lewat parameter sz — jadi ukurannya
+// ditentuin di frontend sesuai kebutuhan tampilan (kecil buat grid
+// thumbnail, gede cuma pas lightbox), bukan hardcode satu ukuran gede
+// buat semua kayak sebelumnya.
+function driveThumbUrl(fileId, width) {
+  return `https://drive.google.com/thumbnail?id=${fileId}&sz=w${width}`;
+}
+
 // =====================================================================
 // STATUS HELPERS
 // =====================================================================
@@ -87,6 +95,8 @@ function statusInfo(statusYT) {
 // =====================================================================
 // FETCH DATA
 // =====================================================================
+// Tahap 1: cepet — cuma data dasar dari Sheet (judul, status, jam, dll),
+// TANPA caption/gambar. Backend sengaja gak nyentuh Docs/Drive di sini.
 async function fetchContent(dateISO) {
   const url = `${CONFIG.API_URL}?action=list&date=${dateISO}`;
   const res = await fetch(url);
@@ -94,6 +104,18 @@ async function fetchContent(dateISO) {
   const json = await res.json();
   if (!json.ok) throw new Error(json.error || 'Server mengembalikan error');
   return json.data;
+}
+
+// Tahap 2: dipanggil per item, belakangan — ambil caption + gambar buat
+// SATU judul konten. Ini yang bikin card "pop-in" begitu selesai, satu-satu,
+// bukan nunggu semuanya kelar dulu baru nampilin apa-apa.
+async function fetchMedia(judulKonten, tanggal) {
+  const url = `${CONFIG.API_URL}?action=media&judul=${encodeURIComponent(judulKonten)}&tanggal=${encodeURIComponent(tanggal)}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error('Gagal ambil media (HTTP ' + res.status + ')');
+  const json = await res.json();
+  if (!json.ok) throw new Error(json.error || 'Server error ambil media');
+  return { caption: json.caption, images: json.images };
 }
 
 // =====================================================================
@@ -133,6 +155,39 @@ function invalidateCache(dateISO) {
   memCache.delete(dateISO);
   try {
     sessionStorage.removeItem(cacheKey(dateISO));
+  } catch (e) { /* gapapa */ }
+}
+
+// Cache KHUSUS media (caption + gambar), terpisah dari cache list dasar di
+// atas — key-nya per judul konten (bukan per tanggal), freshness-nya lebih
+// panjang karena caption/gambar jarang berubah begitu ditulis.
+const MEDIA_FRESH_MS = 5 * 60 * 1000; // 5 menit
+const mediaCache = new Map();
+
+function mediaCacheKey(tanggal, judul) {
+  return `${tanggal}::${judul}`;
+}
+
+function getCachedMedia(tanggal, judul) {
+  const key = mediaCacheKey(tanggal, judul);
+  if (mediaCache.has(key)) return mediaCache.get(key);
+  try {
+    const raw = sessionStorage.getItem('siapupload_media_' + key);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      mediaCache.set(key, parsed);
+      return parsed;
+    }
+  } catch (e) { /* gapapa */ }
+  return null;
+}
+
+function setCachedMedia(tanggal, judul, media) {
+  const key = mediaCacheKey(tanggal, judul);
+  const entry = { media, ts: Date.now() };
+  mediaCache.set(key, entry);
+  try {
+    sessionStorage.setItem('siapupload_media_' + key, JSON.stringify(entry));
   } catch (e) { /* gapapa */ }
 }
 
@@ -191,7 +246,8 @@ async function loadDay() {
 
 // Diam-diam ambil data H-1 dan H+1 di background (gak nge-block apapun,
 // gak nampilin loading), jadi kalau user lanjut geser tanggal, kemungkinan
-// besar udah ada di cache = instan.
+// besar udah ada di cache = instan. Sekalian prefetch media (caption+gambar)
+// tiap itemnya juga, biar geser ke tanggal itu beneran zero-loading.
 function prefetchAdjacentDays_(centerDateISO) {
   [-1, 1].forEach((offset) => {
     const d = new Date(centerDateISO + 'T00:00:00');
@@ -199,11 +255,28 @@ function prefetchAdjacentDays_(centerDateISO) {
     const iso = toISODate(d);
 
     const cached = getCached(iso);
-    if (cached && (Date.now() - cached.ts < CACHE_FRESH_MS)) return; // udah fresh, skip
+    if (cached && (Date.now() - cached.ts < CACHE_FRESH_MS)) {
+      prefetchMediaForItems_(cached.data);
+      return;
+    }
 
     fetchContent(iso)
-      .then((data) => setCached(iso, data))
+      .then((data) => {
+        setCached(iso, data);
+        prefetchMediaForItems_(data);
+      })
       .catch(() => { /* prefetch gagal, diem aja — nanti kena fetch normal kalau user beneran ke situ */ });
+  });
+}
+
+function prefetchMediaForItems_(data) {
+  data.forEach((item) => {
+    const cachedMedia = getCachedMedia(item.tanggal, item.judulKonten);
+    if (cachedMedia && (Date.now() - cachedMedia.ts < MEDIA_FRESH_MS)) return;
+
+    fetchMedia(item.judulKonten, item.tanggal)
+      .then((media) => setCachedMedia(item.tanggal, item.judulKonten, media))
+      .catch(() => { /* diem aja, sama kayak di atas */ });
   });
 }
 
@@ -260,13 +333,34 @@ function renderProgress(data) {
 }
 
 // =====================================================================
-// RENDER: MISSION CARDS
+// RENDER: MISSION CARDS (2 tahap — dasar dulu, media nyusul per item)
 // =====================================================================
+
+// Nomor "generasi" render — dinaikin tiap kali renderContent dipanggil.
+// Dipakai buat nge-cancel efek dari fetch media yang MASIH JALAN pas user
+// udah pindah ke tanggal lain, biar gak nimpa card yang salah.
+let mediaGeneration = 0;
+const cardRefs = new Map(); // idx -> { slidesEl, briefingEl, copyBtn, downloadSectionEl }
+
 function renderContent(data) {
   if (!data || data.length === 0) {
     renderEmpty();
     return;
   }
+
+  mediaGeneration++;
+  const myGeneration = mediaGeneration;
+  cardRefs.clear();
+
+  // reset state media tiap item — walau item ini datang dari cache lama
+  // (object yang sama dipake ulang), render awalnya tetep mulai dari
+  // "loading" dulu; kalau ternyata medianya udah ke-cache juga, langsung
+  // keisi lagi sesaat kemudian tanpa sempet keliatan flicker
+  data.forEach((item) => {
+    item._mediaState = 'loading';
+    item.caption = '';
+    item.images = [];
+  });
 
   elContent.innerHTML = `<div class="grid" id="grid"></div>`;
   const grid = document.getElementById('grid');
@@ -276,6 +370,134 @@ function renderContent(data) {
     cardEl.style.animationDelay = `${Math.min(idx * 0.05, 0.3)}s`;
     grid.appendChild(cardEl);
   });
+
+  loadAllMedia_(data, myGeneration);
+}
+
+// Buat tiap item, cek cache media dulu (kalau ada & masih segar, langsung
+// keisi tanpa fetch sama sekali) — kalau enggak, fetch beneran ke backend.
+// Tiap item independen, jadi yang duluan selesai duluan muncul (gak nunggu
+// yang lain).
+function loadAllMedia_(data, generation) {
+  data.forEach((item, idx) => {
+    const cachedMedia = getCachedMedia(item.tanggal, item.judulKonten);
+    if (cachedMedia && (Date.now() - cachedMedia.ts < MEDIA_FRESH_MS)) {
+      applyMediaToCard_(idx, item, cachedMedia.media, generation);
+      return;
+    }
+
+    fetchMedia(item.judulKonten, item.tanggal)
+      .then((media) => {
+        setCachedMedia(item.tanggal, item.judulKonten, media);
+        applyMediaToCard_(idx, item, media, generation);
+      })
+      .catch((err) => {
+        applyMediaToCard_(idx, item, { caption: '', images: [], _error: err.message }, generation);
+      });
+  });
+}
+
+function applyMediaToCard_(idx, item, media, generation) {
+  if (generation !== mediaGeneration) return; // user udah pindah tanggal, buang hasil ini
+
+  item.caption = media.caption || '';
+  item.images = media.images || [];
+  item._mediaState = 'ready';
+
+  const refs = cardRefs.get(idx);
+  if (!refs) return; // card-nya udah gak ada lagi di layar
+
+  buildSlidesContent_(refs.slidesEl, item);
+  buildBriefingContent_(refs.briefingEl, item);
+  updateCopyButton_(refs.copyBtn, item);
+  buildDownloadSection_(refs.downloadSectionEl, item);
+}
+
+// --- Builder per-bagian, dipanggil baik saat render awal (state "loading")
+// maupun setelah media selesai dimuat (state "ready") ---
+
+function buildSlidesContent_(container, item) {
+  container.innerHTML = '';
+
+  if (item._mediaState === 'loading') {
+    const loading = document.createElement('div');
+    loading.className = 'slide-count';
+    loading.textContent = '⏳ Memuat gambar...';
+    container.appendChild(loading);
+    return;
+  }
+
+  const hasImages = item.images && item.images.length > 0;
+  if (hasImages) {
+    item.images.forEach((img) => {
+      // thumbnail grid cuma 52x52 CSS px — minta versi kecil dari Drive
+      // (w200, bukan w1000) biar gak boros bandwidth & lebih cepet muncul.
+      // Versi gedenya (w1200) baru diminta kalau di-tap buat lightbox.
+      const thumbSrc = driveThumbUrl(img.id, 200);
+      const fullSrc = driveThumbUrl(img.id, 1200);
+
+      const thumb = document.createElement('div');
+      thumb.className = 'slide-thumb';
+      thumb.style.backgroundImage = `url("${thumbSrc}")`;
+      thumb.title = img.name;
+      thumb.addEventListener('click', () => openLightbox(fullSrc));
+      container.appendChild(thumb);
+    });
+    const count = document.createElement('div');
+    count.className = 'slide-count';
+    count.textContent = `${item.images.length} slide`;
+    container.appendChild(count);
+  } else {
+    const warn = document.createElement('div');
+    warn.className = 'slide-count slide-warn';
+    warn.textContent = '⚠ Gambar tidak ditemukan di Drive';
+    container.appendChild(warn);
+  }
+}
+
+function buildBriefingContent_(container, item) {
+  if (item._mediaState === 'loading') {
+    container.className = 'briefing';
+    container.innerHTML = `<span class="label">BRIEFING</span>⏳ Memuat caption...`;
+    return;
+  }
+
+  const hasCaption = !!item.caption;
+  container.className = 'briefing' + (hasCaption ? '' : ' empty');
+  container.innerHTML = `<span class="label">BRIEFING</span>${
+    hasCaption ? escapeHtml(item.caption) : '⚠ Caption tidak ditemukan di Docs'
+  }`;
+}
+
+function updateCopyButton_(copyBtn, item) {
+  copyBtn.disabled = item._mediaState !== 'ready' || !item.caption;
+}
+
+function buildDownloadSection_(container, item) {
+  container.innerHTML = '';
+  if (item._mediaState !== 'ready') return;
+
+  const hasImages = item.images && item.images.length > 0;
+  if (!hasImages) return;
+
+  const dlLabel = document.createElement('div');
+  dlLabel.className = 'slide-count';
+  dlLabel.style.padding = '0 14px 6px';
+  dlLabel.textContent = 'DOWNLOAD GAMBAR:';
+  container.appendChild(dlLabel);
+
+  const dlRow = document.createElement('div');
+  dlRow.className = 'actions';
+  dlRow.style.paddingTop = '0';
+  item.images.forEach((img, i) => {
+    const btn = document.createElement('button');
+    btn.className = 'btn dl';
+    btn.textContent = `⬇ ${i + 1}`;
+    btn.title = 'Download ' + img.name;
+    btn.addEventListener('click', () => downloadImageViaProxy(img.downloadUrl, img.name, btn));
+    dlRow.appendChild(btn);
+  });
+  container.appendChild(dlRow);
 }
 
 function renderCard(item, idx) {
@@ -283,8 +505,6 @@ function renderCard(item, idx) {
   card.className = 'card';
 
   const status = statusInfo(item.statusYT);
-  const hasImages = item.images && item.images.length > 0;
-  const hasCaption = !!item.caption;
 
   // --- head ---
   const head = document.createElement('div');
@@ -298,28 +518,9 @@ function renderCard(item, idx) {
   `;
   card.appendChild(head);
 
-  // --- slides ---
+  // --- slides (diisi lewat buildSlidesContent_, dipanggil di bawah) ---
   const slides = document.createElement('div');
   slides.className = 'slides';
-  if (hasImages) {
-    item.images.forEach((img) => {
-      const thumb = document.createElement('div');
-      thumb.className = 'slide-thumb';
-      thumb.style.backgroundImage = `url("${img.previewUrl}")`;
-      thumb.title = img.name;
-      thumb.addEventListener('click', () => openLightbox(img.previewUrl));
-      slides.appendChild(thumb);
-    });
-    const count = document.createElement('div');
-    count.className = 'slide-count';
-    count.textContent = `${item.images.length} slide`;
-    slides.appendChild(count);
-  } else {
-    const warn = document.createElement('div');
-    warn.className = 'slide-count slide-warn';
-    warn.textContent = '⚠ Gambar tidak ditemukan di Drive';
-    slides.appendChild(warn);
-  }
   card.appendChild(slides);
 
   // --- meta ---
@@ -331,12 +532,9 @@ function renderCard(item, idx) {
   `;
   card.appendChild(meta);
 
-  // --- briefing (caption) ---
+  // --- briefing (caption, diisi lewat buildBriefingContent_) ---
   const briefing = document.createElement('div');
-  briefing.className = 'briefing' + (hasCaption ? '' : ' empty');
-  briefing.innerHTML = `<span class="label">BRIEFING</span>${
-    hasCaption ? escapeHtml(item.caption) : '⚠ Caption tidak ditemukan di Docs'
-  }`;
+  briefing.className = 'briefing';
   card.appendChild(briefing);
 
   // --- actions ---
@@ -346,7 +544,7 @@ function renderCard(item, idx) {
   const copyBtn = document.createElement('button');
   copyBtn.className = 'btn primary';
   copyBtn.innerHTML = '📋 Copy Caption';
-  copyBtn.disabled = !hasCaption;
+  copyBtn.disabled = true; // aktif belakangan begitu caption-nya siap
   copyBtn.addEventListener('click', () => copyCaption(item.caption, copyBtn));
   actions.appendChild(copyBtn);
 
@@ -359,27 +557,9 @@ function renderCard(item, idx) {
 
   card.appendChild(actions);
 
-  // --- download per-slide (satu-satu, ini cara utama download gambar) ---
-  if (hasImages) {
-    const dlLabel = document.createElement('div');
-    dlLabel.className = 'slide-count';
-    dlLabel.style.padding = '0 14px 6px';
-    dlLabel.textContent = 'DOWNLOAD GAMBAR:';
-    card.appendChild(dlLabel);
-
-    const dlRow = document.createElement('div');
-    dlRow.className = 'actions';
-    dlRow.style.paddingTop = '0';
-    item.images.forEach((img, i) => {
-      const btn = document.createElement('button');
-      btn.className = 'btn dl';
-      btn.textContent = `⬇ ${i + 1}`;
-      btn.title = 'Download ' + img.name;
-      btn.addEventListener('click', () => downloadImageViaProxy(img.downloadUrl, img.name, btn));
-      dlRow.appendChild(btn);
-    });
-    card.appendChild(dlRow);
-  }
+  // --- download section (diisi lewat buildDownloadSection_ begitu media siap) ---
+  const downloadSection = document.createElement('div');
+  card.appendChild(downloadSection);
 
   // --- inline status update form ---
   const form = document.createElement('div');
@@ -410,6 +590,15 @@ function renderCard(item, idx) {
     btn.disabled = true;
     submitStatusUpdate(item, newStatus, postId);
   });
+
+  // simpan referensi elemen buat diisi belakangan pas media selesai dimuat
+  cardRefs.set(idx, { slidesEl: slides, briefingEl: briefing, copyBtn, downloadSectionEl: downloadSection });
+
+  // render state awal (loading, atau langsung ready kalau kebetulan udah di-apply sebelum ini)
+  buildSlidesContent_(slides, item);
+  buildBriefingContent_(briefing, item);
+  updateCopyButton_(copyBtn, item);
+  buildDownloadSection_(downloadSection, item);
 
   return card;
 }
