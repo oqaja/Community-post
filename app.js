@@ -448,5 +448,14 @@ if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('./sw.js').catch((err) => {
       console.warn('SW registration failed:', err);
     });
+
+    // Auto-reload sekali begitu SW versi baru resmi ambil alih kontrol,
+    // biar update kode langsung kepakai tanpa user harus uninstall/reinstall.
+    let refreshedOnce = false;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (refreshedOnce) return;
+      refreshedOnce = true;
+      window.location.reload();
+    });
   });
 }
