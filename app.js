@@ -247,13 +247,6 @@ function renderCard(item, idx) {
   copyBtn.addEventListener('click', () => copyCaption(item.caption));
   actions.appendChild(copyBtn);
 
-  const zipBtn = document.createElement('button');
-  zipBtn.className = 'btn';
-  zipBtn.textContent = '⬇ Download All (.zip)';
-  zipBtn.disabled = !hasImages;
-  zipBtn.addEventListener('click', () => downloadZip(item.judulKonten, zipBtn));
-  actions.appendChild(zipBtn);
-
   const statusBtn = document.createElement('button');
   statusBtn.className = 'btn ghost';
   statusBtn.textContent = '✓';
@@ -263,17 +256,24 @@ function renderCard(item, idx) {
 
   card.appendChild(actions);
 
-  // --- per-slide download row (kecil, di bawah actions) ---
+  // --- download per-slide (satu-satu, ini cara utama download gambar) ---
   if (hasImages) {
+    const dlLabel = document.createElement('div');
+    dlLabel.className = 'slide-count';
+    dlLabel.style.padding = '0 14px 6px';
+    dlLabel.textContent = 'DOWNLOAD GAMBAR:';
+    card.appendChild(dlLabel);
+
     const dlRow = document.createElement('div');
     dlRow.className = 'actions';
     dlRow.style.paddingTop = '0';
     item.images.forEach((img, i) => {
       const a = document.createElement('a');
-      a.className = 'btn ghost';
+      a.className = 'btn';
       a.href = img.downloadUrl;
-      a.textContent = i + 1;
+      a.textContent = `⬇ ${i + 1}`;
       a.title = 'Download ' + img.name;
+      a.download = img.name;
       a.target = '_blank';
       a.rel = 'noopener';
       dlRow.appendChild(a);
@@ -338,25 +338,6 @@ async function copyCaption(caption) {
     showToast('✓ Caption disalin!');
   } catch (err) {
     showToast('Gagal copy: ' + err.message, true);
-  }
-}
-
-async function downloadZip(judulKonten, btnEl) {
-  const originalText = btnEl.textContent;
-  btnEl.textContent = 'MENYIAPKAN ZIP...';
-  btnEl.disabled = true;
-  try {
-    const url = `${CONFIG.API_URL}?action=zip&judul=${encodeURIComponent(judulKonten)}`;
-    const res = await fetch(url);
-    const json = await res.json();
-    if (!json.ok) throw new Error(json.error || 'Gagal bikin zip');
-    window.open(json.downloadUrl, '_blank', 'noopener');
-    showToast('✓ ZIP siap, download dimulai');
-  } catch (err) {
-    showToast('Gagal: ' + err.message, true);
-  } finally {
-    btnEl.textContent = originalText;
-    btnEl.disabled = false;
   }
 }
 
