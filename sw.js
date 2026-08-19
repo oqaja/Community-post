@@ -2,11 +2,11 @@ const CACHE_NAME = 'siap-upload-v1';
 const SHELL_ASSETS = [
   './',
   './index.html',
-  './css/style.css',
-  './js/app.js',
+  './style.css',
+  './app.js',
   './manifest.json',
-  './icons/icon-192.png',
-  './icons/icon-512.png'
+  './icon-192.png',
+  './icon-512.png'
 ];
 
 self.addEventListener('install', (event) => {
