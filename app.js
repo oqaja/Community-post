@@ -275,7 +275,7 @@ function renderCard(item, idx) {
     dlRow.style.paddingTop = '0';
     item.images.forEach((img, i) => {
       const btn = document.createElement('button');
-      btn.className = 'btn';
+      btn.className = 'btn dl';
       btn.textContent = `⬇ ${i + 1}`;
       btn.title = 'Download ' + img.name;
       btn.addEventListener('click', () => downloadImageViaProxy(img.downloadUrl, img.name, btn));
