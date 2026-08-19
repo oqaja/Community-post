@@ -139,6 +139,10 @@ button{font-family:inherit;}
   min-width:0; /* cegah grid item "blowout" gara-gara teks panjang tanpa spasi */
   animation:card-in .35s ease backwards;
 }
+/* Setiap anak langsung .card juga butuh min-width:0 masing-masing — tanpa ini,
+   .actions/.slides/dll tetap bisa maksa lebih lebar dari .card meski .card
+   sendiri sudah dibatasi. Ini akar masalah cutoff-nya. */
+.card > *{ min-width:0; }
 @keyframes card-in{
   from{ opacity:0; transform:translateY(10px); }
   to{ opacity:1; transform:translateY(0); }
@@ -247,6 +251,7 @@ button{font-family:inherit;}
   background:linear-gradient(135deg, rgba(255,62,158,0.28), rgba(255,62,158,0.12));
 }
 .btn.ghost{ flex:0 0 auto; min-width:44px; padding:9px 10px; }
+.btn.dl{ flex:0 0 auto; min-width:48px; padding:9px 10px; }
 .btn:disabled{ opacity:.4; cursor:not-allowed; }
 
 /* status update inline form */
