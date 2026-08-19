@@ -114,11 +114,15 @@ async function loadDay() {
 // RENDER: STATES
 // =====================================================================
 function renderLoading() {
-  elContent.innerHTML = `
-    <div class="state-panel">
-      <div class="big">LOADING...</div>
-      <div>Ambil data konten hari ini...</div>
-    </div>`;
+  const cards = Array.from({ length: 4 }).map(() => `
+    <div class="skeleton-card">
+      <div class="skel-line w60"></div>
+      <div class="skel-line w40"></div>
+      <div class="skel-line tall"></div>
+      <div class="skel-line w60"></div>
+    </div>
+  `).join('');
+  elContent.innerHTML = `<div class="skeleton-grid">${cards}</div>`;
 }
 
 function renderError(message) {
@@ -171,7 +175,9 @@ function renderContent(data) {
   const grid = document.getElementById('grid');
 
   data.forEach((item, idx) => {
-    grid.appendChild(renderCard(item, idx));
+    const cardEl = renderCard(item, idx);
+    cardEl.style.animationDelay = `${Math.min(idx * 0.05, 0.3)}s`;
+    grid.appendChild(cardEl);
   });
 }
 
@@ -242,15 +248,15 @@ function renderCard(item, idx) {
 
   const copyBtn = document.createElement('button');
   copyBtn.className = 'btn primary';
-  copyBtn.textContent = '📋 Copy Caption';
+  copyBtn.innerHTML = '📋 Copy Caption';
   copyBtn.disabled = !hasCaption;
-  copyBtn.addEventListener('click', () => copyCaption(item.caption));
+  copyBtn.addEventListener('click', () => copyCaption(item.caption, copyBtn));
   actions.appendChild(copyBtn);
 
   const statusBtn = document.createElement('button');
-  statusBtn.className = 'btn ghost';
-  statusBtn.textContent = '✓';
-  statusBtn.title = 'Update status';
+  statusBtn.className = 'btn status-btn';
+  statusBtn.id = `statusBtn-${idx}`;
+  statusBtn.innerHTML = '🔄 Ubah Status';
   statusBtn.addEventListener('click', () => toggleStatusForm(idx));
   actions.appendChild(statusBtn);
 
@@ -283,24 +289,28 @@ function renderCard(item, idx) {
   form.className = 'status-form';
   form.id = `statusForm-${idx}`;
   form.innerHTML = `
+    <div class="current-status">Status sekarang: <b>${escapeHtml(status.label)}</b></div>
     <label>Ubah status ke:</label>
     <select id="statusSelect-${idx}">
       <option value="Scheduled">Scheduled</option>
       <option value="Uploaded">Uploaded</option>
     </select>
-    <label>Post ID YT (opsional):</label>
-    <input type="text" id="postIdInput-${idx}" placeholder="isi kalau status Uploaded">
+    <label>Post ID YT (opsional, biasanya diisi kalau status Uploaded):</label>
+    <input type="text" id="postIdInput-${idx}" placeholder="contoh: dQw4w9WgXcQ">
     <div class="row">
-      <button class="btn primary" id="saveStatus-${idx}">Simpan</button>
+      <button class="btn primary" id="saveStatus-${idx}">💾 Simpan</button>
       <button class="btn ghost" id="cancelStatus-${idx}">✕</button>
     </div>
   `;
   card.appendChild(form);
 
   form.querySelector(`#cancelStatus-${idx}`).addEventListener('click', () => toggleStatusForm(idx, false));
-  form.querySelector(`#saveStatus-${idx}`).addEventListener('click', () => {
+  form.querySelector(`#saveStatus-${idx}`).addEventListener('click', (e) => {
     const newStatus = form.querySelector(`#statusSelect-${idx}`).value;
     const postId = form.querySelector(`#postIdInput-${idx}`).value.trim();
+    const btn = e.currentTarget;
+    btn.textContent = 'MENYIMPAN...';
+    btn.disabled = true;
     submitStatusUpdate(item, newStatus, postId);
   });
 
@@ -311,14 +321,21 @@ function toggleStatusForm(idx, forceOpen) {
   const form = document.getElementById(`statusForm-${idx}`);
   if (!form) return;
   const shouldOpen = forceOpen !== undefined ? forceOpen : !form.classList.contains('open');
+
   document.querySelectorAll('.status-form.open').forEach((f) => f.classList.remove('open'));
-  if (shouldOpen) form.classList.add('open');
+  document.querySelectorAll('.status-btn.active').forEach((b) => b.classList.remove('active'));
+
+  if (shouldOpen) {
+    form.classList.add('open');
+    const btn = document.getElementById(`statusBtn-${idx}`);
+    if (btn) btn.classList.add('active');
+  }
 }
 
 // =====================================================================
 // ACTIONS
 // =====================================================================
-async function copyCaption(caption) {
+async function copyCaption(caption, btnEl) {
   try {
     if (navigator.clipboard && navigator.clipboard.writeText) {
       await navigator.clipboard.writeText(caption);
@@ -333,6 +350,16 @@ async function copyCaption(caption) {
       document.body.removeChild(ta);
     }
     showToast('✓ Caption disalin!');
+
+    if (btnEl) {
+      const original = btnEl.innerHTML;
+      btnEl.innerHTML = '✓ COPIED';
+      btnEl.classList.add('flash');
+      setTimeout(() => {
+        btnEl.innerHTML = original;
+        btnEl.classList.remove('flash');
+      }, 1200);
+    }
   } catch (err) {
     showToast('Gagal copy: ' + err.message, true);
   }
