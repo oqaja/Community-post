@@ -96,18 +96,115 @@ async function fetchContent(dateISO) {
   return json.data;
 }
 
-async function loadDay() {
-  elDateLabel.textContent = toDateLabel(currentDate);
-  renderLoading();
+// =====================================================================
+// CACHE DI BROWSER — biar geser tanggal yang udah pernah dibuka itu INSTAN,
+// gak perlu nunggu fetch sama sekali. Disimpan di memory (cepat, ilang pas
+// reload) + sessionStorage (bertahan lintas reload dalam sesi yang sama).
+// =====================================================================
+const CACHE_FRESH_MS = 60 * 1000; // di bawah ini dianggap "masih segar", gak usah revalidate ulang
+const memCache = new Map(); // dateISO -> { data, ts }
+
+function cacheKey(dateISO) {
+  return `siapupload_cache_${dateISO}`;
+}
+
+function getCached(dateISO) {
+  if (memCache.has(dateISO)) return memCache.get(dateISO);
   try {
-    const data = await fetchContent(toISODate(currentDate));
+    const raw = sessionStorage.getItem(cacheKey(dateISO));
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      memCache.set(dateISO, parsed);
+      return parsed;
+    }
+  } catch (e) { /* sessionStorage gak tersedia, skip aja */ }
+  return null;
+}
+
+function setCached(dateISO, data) {
+  const entry = { data, ts: Date.now() };
+  memCache.set(dateISO, entry);
+  try {
+    sessionStorage.setItem(cacheKey(dateISO), JSON.stringify(entry));
+  } catch (e) { /* kepenuhan/gak tersedia, gapapa — memory cache tetap jalan */ }
+}
+
+function invalidateCache(dateISO) {
+  memCache.delete(dateISO);
+  try {
+    sessionStorage.removeItem(cacheKey(dateISO));
+  } catch (e) { /* gapapa */ }
+}
+
+// Penanda request "terbaru" — biar kalau user geser tanggal cepet-cepet,
+// response dari request tanggal LAMA yang baru selesai belakangan gak
+// nimpa tampilan tanggal BARU yang lagi dilihat sekarang.
+let latestRequestId = 0;
+
+async function loadDay() {
+  const dateISO = toISODate(currentDate);
+  const requestId = ++latestRequestId;
+
+  elDateLabel.textContent = toDateLabel(currentDate);
+
+  const cached = getCached(dateISO);
+  const isFresh = cached && (Date.now() - cached.ts < CACHE_FRESH_MS);
+
+  if (cached) {
+    // ada data lama (walau mungkin agak basi) — tampilin LANGSUNG, jangan
+    // kasih skeleton loading, biar kerasa instan
+    currentData = cached.data;
+    renderContent(cached.data);
+    renderProgress(cached.data);
+  } else {
+    renderLoading();
+  }
+
+  // udah fresh banget (baru di-fetch < 1 menit lalu) — gak usah refetch,
+  // cukup pastiin prefetch tanggal sebelah tetep jalan
+  if (isFresh) {
+    prefetchAdjacentDays_(dateISO);
+    return;
+  }
+
+  try {
+    const data = await fetchContent(dateISO);
+    if (requestId !== latestRequestId) return; // user udah pindah tanggal lain, buang hasil ini
+
+    setCached(dateISO, data);
     currentData = data;
     renderContent(data);
     renderProgress(data);
+    prefetchAdjacentDays_(dateISO);
   } catch (err) {
-    renderError(err.message);
-    renderProgress([]);
+    if (requestId !== latestRequestId) return;
+    if (cached) {
+      // masih ada data lama buat ditampilin, jadi gak usah full-error state —
+      // cukup kasih tau lewat toast kalau refresh-nya gagal
+      showToast('Gagal refresh data terbaru: ' + err.message, true);
+    } else {
+      renderError(err.message);
+      renderProgress([]);
+    }
   }
+}
+
+// Diam-diam ambil data H-1 dan H+1 di background (gak nge-block apapun,
+// gak nampilin loading), jadi kalau user lanjut geser tanggal, kemungkinan
+// besar udah ada di cache = instan.
+function prefetchAdjacentDays_(centerDateISO) {
+  [-1, 1].forEach((offset) => {
+    const d = new Date(centerDateISO + 'T00:00:00');
+    d.setDate(d.getDate() + offset);
+    const iso = toISODate(d);
+
+    const cached = getCached(iso);
+    if (cached && (Date.now() - cached.ts < CACHE_FRESH_MS)) return; // udah fresh, skip
+
+    fetchContent(iso)
+      .then((data) => setCached(iso, data))
+      .catch(() => { /* prefetch gagal, diem aja — nanti kena fetch normal kalau user beneran ke situ */ });
+  });
 }
 
 // =====================================================================
@@ -416,6 +513,7 @@ async function submitStatusUpdate(item, newStatus, postId) {
     if (!json.ok) throw new Error(json.error || 'Gagal update status');
 
     showToast(`✓ Status "${item.judulKonten}" diubah ke ${newStatus}`);
+    invalidateCache(item.tanggal); // biar loadDay() gak nampilin data lama dulu sebelum yang baru
     loadDay(); // refresh biar semua card & progress bar sinkron
   } catch (err) {
     showToast('Gagal update: ' + err.message, true);
