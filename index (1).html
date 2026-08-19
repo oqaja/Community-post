@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Siap Upload — Shoe Police</title>
+
+<link rel="manifest" href="./manifest.json">
+<meta name="theme-color" content="#0B0714">
+<link rel="apple-touch-icon" href="./icons/icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="./css/style.css">
+</head>
+<body>
+<div class="wrap">
+
+  <div class="topbar">
+    <div>
+      <div class="logo">SIAP<span>UPLOAD</span></div>
+      <div class="team-tag">// tim kreatif — shoe police</div>
+    </div>
+    <div class="date-nav">
+      <button id="prevDay" title="Hari sebelumnya">◀</button>
+      <div class="date-label" id="dateLabel">—</div>
+      <button id="nextDay" title="Hari berikutnya">▶</button>
+      <button id="todayBtn" class="today-btn">HARI INI</button>
+    </div>
+  </div>
+
+  <div class="quest-progress">
+    <div class="qp-top">
+      <span>QUEST PROGRESS — HARI INI</span>
+      <span id="qpCount"><b>0</b> / 0 SELESAI</span>
+    </div>
+    <div class="qp-bar" id="qpBar"></div>
+  </div>
+
+  <div id="content">
+    <div class="state-panel">
+      <div class="big">LOADING...</div>
+      <div>Ambil data konten...</div>
+    </div>
+  </div>
+
+  <div class="footnote">— data ditarik langsung dari Sheet, Docs & Drive —</div>
+
+</div>
+
+<div class="toast" id="toast"></div>
+
+<div class="lightbox" id="lightbox">
+  <button class="close-btn" id="lightboxClose">✕ TUTUP</button>
+  <img id="lightboxImg" src="" alt="">
+</div>
+
+<script src="./js/app.js"></script>
+</body>
+</html>
