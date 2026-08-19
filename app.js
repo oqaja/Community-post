@@ -268,15 +268,12 @@ function renderCard(item, idx) {
     dlRow.className = 'actions';
     dlRow.style.paddingTop = '0';
     item.images.forEach((img, i) => {
-      const a = document.createElement('a');
-      a.className = 'btn';
-      a.href = img.downloadUrl;
-      a.textContent = `⬇ ${i + 1}`;
-      a.title = 'Download ' + img.name;
-      a.download = img.name;
-      a.target = '_blank';
-      a.rel = 'noopener';
-      dlRow.appendChild(a);
+      const btn = document.createElement('button');
+      btn.className = 'btn';
+      btn.textContent = `⬇ ${i + 1}`;
+      btn.title = 'Download ' + img.name;
+      btn.addEventListener('click', () => downloadImageViaProxy(img.downloadUrl, img.name, btn));
+      dlRow.appendChild(btn);
     });
     card.appendChild(dlRow);
   }
@@ -338,6 +335,36 @@ async function copyCaption(caption) {
     showToast('✓ Caption disalin!');
   } catch (err) {
     showToast('Gagal copy: ' + err.message, true);
+  }
+}
+
+async function downloadImageViaProxy(url, fallbackName, btnEl) {
+  const originalText = btnEl.textContent;
+  btnEl.textContent = '...';
+  btnEl.disabled = true;
+  try {
+    const res = await fetch(url);
+    const json = await res.json();
+    if (!json.ok) throw new Error(json.error || 'Gagal ambil file');
+
+    const bytes = Uint8Array.from(atob(json.base64), (c) => c.charCodeAt(0));
+    const blob = new Blob([bytes], { type: json.mimeType || 'application/octet-stream' });
+    const blobUrl = URL.createObjectURL(blob);
+
+    const a = document.createElement('a');
+    a.href = blobUrl;
+    a.download = json.fileName || fallbackName || 'gambar.jpg';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 4000);
+
+    showToast(`✓ ${json.fileName || fallbackName} didownload`);
+  } catch (err) {
+    showToast('Gagal download: ' + err.message, true);
+  } finally {
+    btnEl.textContent = originalText;
+    btnEl.disabled = false;
   }
 }
 
