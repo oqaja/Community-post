@@ -1,4 +1,4 @@
-const CACHE_NAME = 'siap-upload-v4';
+const CACHE_NAME = 'siap-upload-v5';
 const SHELL_ASSETS = [
   './',
   './index.html',
@@ -28,17 +28,22 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   const req = event.request;
 
-  // Data dari Apps Script & file Drive HARUS selalu fresh, jangan di-cache.
+  // Data dari Apps Script & file Drive HARUS selalu fresh, jangan disentuh SW.
   if (req.url.indexOf('script.google.com') !== -1 || req.url.indexOf('drive.google.com') !== -1) {
     return;
   }
 
-  // Shell app: cache-first supaya buka cepat & tetap jalan pas offline,
-  // fallback ke network kalau belum ke-cache.
+  // NETWORK-FIRST: selama online, selalu ambil versi terbaru dari server dan
+  // simpan salinannya ke cache. Cache cuma dipakai sebagai fallback pas
+  // offline (mis. sinyal HP jelek). Ini biar update kode gak butuh
+  // uninstall/reinstall manual tiap kali seperti sebelumnya.
   event.respondWith(
-    caches.match(req).then((cached) => {
-      if (cached) return cached;
-      return fetch(req).catch(() => cached);
-    })
+    fetch(req)
+      .then((res) => {
+        const resClone = res.clone();
+        caches.open(CACHE_NAME).then((cache) => cache.put(req, resClone));
+        return res;
+      })
+      .catch(() => caches.match(req))
   );
 });
