@@ -1,4 +1,4 @@
-const CACHE_NAME = 'siap-upload-v3';
+const CACHE_NAME = 'siap-upload-v4';
 const SHELL_ASSETS = [
   './',
   './index.html',
