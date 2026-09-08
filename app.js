@@ -340,7 +340,7 @@ function renderProgress(data) {
 // Dipakai buat nge-cancel efek dari fetch media yang MASIH JALAN pas user
 // udah pindah ke tanggal lain, biar gak nimpa card yang salah.
 let mediaGeneration = 0;
-const cardRefs = new Map(); // idx -> { slidesEl, briefingEl, copyBtn, downloadSectionEl }
+const cardRefs = new Map(); // idx -> { slidesEl, briefingEl, copyBtn, downloadAllBtn, downloadSectionEl }
 
 function renderContent(data) {
   if (!data || data.length === 0) {
@@ -410,6 +410,7 @@ function applyMediaToCard_(idx, item, media, generation) {
   buildSlidesContent_(refs.slidesEl, item);
   buildBriefingContent_(refs.briefingEl, item);
   updateCopyButton_(refs.copyBtn, item);
+  updateDownloadAllButton_(refs.downloadAllBtn, item);
   buildDownloadSection_(refs.downloadSectionEl, item);
 }
 
@@ -471,6 +472,15 @@ function buildBriefingContent_(container, item) {
 
 function updateCopyButton_(copyBtn, item) {
   copyBtn.disabled = item._mediaState !== 'ready' || !item.caption;
+}
+
+function updateDownloadAllButton_(btn, item) {
+  if (!btn) return;
+  // cuma aktif kalau media udah siap DAN ada minimal 1 gambar buat didownload.
+  // Jangan sentuh kalau lagi proses download (biar teks progress "2/5..." gak
+  // ke-reset di tengah jalan).
+  if (btn.dataset.busy === '1') return;
+  btn.disabled = item._mediaState !== 'ready' || !item.images || item.images.length === 0;
 }
 
 function buildDownloadSection_(container, item) {
@@ -548,6 +558,13 @@ function renderCard(item, idx) {
   copyBtn.addEventListener('click', () => copyCaption(item.caption, copyBtn));
   actions.appendChild(copyBtn);
 
+  const downloadAllBtn = document.createElement('button');
+  downloadAllBtn.className = 'btn';
+  downloadAllBtn.innerHTML = '📥 Download Semua';
+  downloadAllBtn.disabled = true; // aktif belakangan begitu media (gambar) siap
+  downloadAllBtn.addEventListener('click', () => downloadAllImages(item, downloadAllBtn));
+  actions.appendChild(downloadAllBtn);
+
   const statusBtn = document.createElement('button');
   statusBtn.className = 'btn status-btn';
   statusBtn.id = `statusBtn-${idx}`;
@@ -592,12 +609,13 @@ function renderCard(item, idx) {
   });
 
   // simpan referensi elemen buat diisi belakangan pas media selesai dimuat
-  cardRefs.set(idx, { slidesEl: slides, briefingEl: briefing, copyBtn, downloadSectionEl: downloadSection });
+  cardRefs.set(idx, { slidesEl: slides, briefingEl: briefing, copyBtn, downloadAllBtn, downloadSectionEl: downloadSection });
 
   // render state awal (loading, atau langsung ready kalau kebetulan udah di-apply sebelum ini)
   buildSlidesContent_(slides, item);
   buildBriefingContent_(briefing, item);
   updateCopyButton_(copyBtn, item);
+  updateDownloadAllButton_(downloadAllBtn, item);
   buildDownloadSection_(downloadSection, item);
 
   return card;
@@ -673,11 +691,70 @@ async function downloadImageViaProxy(url, fallbackName, btnEl) {
     setTimeout(() => URL.revokeObjectURL(blobUrl), 4000);
 
     showToast(`✓ ${json.fileName || fallbackName} didownload`);
+    return true;
   } catch (err) {
     showToast('Gagal download: ' + err.message, true);
+    return false;
   } finally {
     btnEl.textContent = originalText;
     btnEl.disabled = false;
+  }
+}
+
+// Download SEMUA gambar dalam satu card, SATU PER SATU BERURUTAN (bukan paralel).
+// Sengaja gak di-zip — fitur zip pernah dicoba & digagalin karena bermasalah di
+// mobile. Jeda antar download biar browser/mobile gak nge-block download beruntun.
+async function downloadAllImages(item, btnEl) {
+  const images = (item && item.images) || [];
+  if (images.length === 0) return;
+
+  const originalHtml = btnEl.innerHTML;
+  const total = images.length;
+  let ok = 0;
+  let fail = 0;
+
+  btnEl.dataset.busy = '1';
+  btnEl.disabled = true;
+
+  // Tombol individual (⬇ 1, ⬇ 2, ...) di section download bawah juga di-disable
+  // selama proses biar gak tabrakan sama batch download.
+  const refs = [...cardRefs.values()].find((r) => r.downloadAllBtn === btnEl);
+  const perImageBtns = refs && refs.downloadSectionEl
+    ? [...refs.downloadSectionEl.querySelectorAll('button.btn.dl')]
+    : [];
+  perImageBtns.forEach((b) => { b.disabled = true; });
+
+  // downloadImageViaProxy nyetir teks/disabled tombol yang dikasih ke dia,
+  // jadi kita kasih tombol dummy (detached) biar tampilan progress di tombol
+  // asli ("2/5...") gak keganggu.
+  const proxyBtn = document.createElement('button');
+
+  for (let i = 0; i < total; i++) {
+    btnEl.textContent = `${i + 1}/${total}...`;
+    const img = images[i];
+    let success = false;
+    try {
+      success = await downloadImageViaProxy(img.downloadUrl, img.name, proxyBtn);
+    } catch (e) {
+      success = false;
+    }
+    if (success) ok++; else fail++;
+
+    // jeda antar download (kecuali setelah yang terakhir)
+    if (i < total - 1) {
+      await new Promise((resolve) => setTimeout(resolve, 400));
+    }
+  }
+
+  delete btnEl.dataset.busy;
+  btnEl.innerHTML = originalHtml;
+  btnEl.disabled = false;
+  perImageBtns.forEach((b) => { b.disabled = false; });
+
+  if (fail === 0) {
+    showToast(`✓ ${ok}/${total} gambar berhasil didownload`);
+  } else {
+    showToast(`${ok}/${total} berhasil, ${fail} gagal`, true);
   }
 }
 
